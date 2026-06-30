@@ -146,6 +146,13 @@
   .dash-item .di-val{font-weight:600;font-family:Fraunces,serif;font-size:15px;text-align:right}
   .dash-item .di-when{font-size:11px;font-weight:600;margin-top:3px;text-align:right}
   .dash-empty{color:var(--ink-faint);font-style:italic;text-align:center;padding:26px}
+  .locked-input{background:#23272F !important;border-style:dashed !important;color:var(--ink-soft) !important;cursor:not-allowed}
+  .field label .lock-tag{float:right;text-transform:none;letter-spacing:0;font-weight:600;font-size:10.5px;color:var(--ink-faint)}
+  .lockbar{display:flex;align-items:center;gap:8px;background:rgba(201,162,74,.12);border:1px solid rgba(201,162,74,.3);border-radius:10px;padding:9px 12px;font-size:12.5px;color:#E2C97A;font-weight:500;line-height:1.4}
+  .lockbar.open{background:rgba(91,148,102,.12);border-color:rgba(91,148,102,.35);color:#8FD0A0}
+  .lockbar .spacer{flex:1}
+  .lockbar button{border:none;background:rgba(255,255,255,.1);color:var(--ink);font-weight:600;font-size:12px;padding:7px 12px;border-radius:8px;cursor:pointer;white-space:nowrap}
+  .lockbar button:hover{background:rgba(255,255,255,.18)}
   @media(max-width:560px){
     header{padding:14px 14px 12px}.board{padding:12px 14px 16px;gap:10px}
     .col{flex-basis:228px}.head-right{gap:12px}.stat{display:none}.search{width:140px}
@@ -179,6 +186,7 @@
       <select id="f-stage" title="Etapa"></select>
     </div>
     <div class="modal-body">
+      <div id="lockbar" class="lockbar" style="display:none"></div>
       <div class="field"><label>Nome completo</label><input id="f-nome" placeholder="Nome completo da cliente" autocomplete="off"></div>
       <div class="field"><label>Código do operador</label><input id="f-codop" placeholder="6 números" inputmode="numeric" maxlength="6"></div>
       <div class="field"><label>Benefício / Área</label><select id="f-benef"></select></div>
@@ -265,6 +273,22 @@
   </div>
 </div>
 
+<div class="overlay" id="unlock-overlay">
+  <div class="modal" style="max-width:380px">
+    <div class="modal-head"><h2>Destravar edição</h2></div>
+    <div class="modal-body">
+      <p style="font-size:13.5px;color:var(--ink-soft);margin:0;line-height:1.5">Digite a <b>senha mestre</b> para liberar a edição dos dados protegidos (nome, CPF, telefone e código do operador) desta cliente. A liberação vale só enquanto este cadastro estiver aberto.</p>
+      <div class="field"><label>Senha mestre</label><input id="unlock-pass" type="password" placeholder="••••••••" autocomplete="off"></div>
+      <div id="unlock-err" style="color:#E89089;font-size:12.5px;font-weight:500;min-height:16px"></div>
+    </div>
+    <div class="modal-foot">
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" onclick="closeUnlock()">Cancelar</button>
+      <button class="btn btn-primary" onclick="confirmUnlock()">Destravar</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- ============ INTERFACE (roda sempre, sem depender do Firebase) ============ -->
@@ -304,6 +328,15 @@ const CATEGORIAS = ['A definir','Empregado(a) CLT','Empregado(a) doméstico(a)',
   'Segurado(a) especial (rural)','MEI','Trabalhador avulso','Desempregado(a) (período de graça)','Facultativo(a)'];
 
 let leads=[]; let editingId=null; let draftComments=[]; let draftParcelas=[];
+
+// ---- campos travados: uma vez salvos com valor, não podem ser alterados sem senha mestre ----
+const LOCK_DEFS=[
+  {key:'nome', input:'f-nome', label:'Nome'},
+  {key:'codop',input:'f-codop',label:'Código do operador'},
+  {key:'tel',  input:'f-tel',  label:'Telefone'},
+  {key:'cpf',  input:'f-cpf',  label:'CPF'},
+];
+let lockedKeys=[]; let lockUnlocked=false;
 
 // camada de dados: em memória por padrão; o Firebase a substitui se carregar
 const LocalLayer = {
@@ -429,10 +462,55 @@ function openModal(id=null,stage='novo'){
   document.getElementById('btn-del').style.display=l?'block':'none';
   resetDel();
   renderComments(); renderActivity(l);
+  setupLocks(l);
   document.getElementById('overlay').classList.add('show');
   setTimeout(()=>document.getElementById('f-nome').focus(),50);
 }
-function closeModal(){document.getElementById('overlay').classList.remove('show');editingId=null;draftComments=[];draftParcelas=[];resetDel();}
+function closeModal(){document.getElementById('overlay').classList.remove('show');editingId=null;draftComments=[];draftParcelas=[];lockedKeys=[];lockUnlocked=false;closeUnlock();resetDel();}
+
+/* ---------- travas de campos ---------- */
+function setupLocks(l){
+  lockUnlocked=false;
+  lockedKeys = l ? LOCK_DEFS.filter(d=>((l[d.key]||'').toString().trim()!=='')).map(d=>d.key) : [];
+  applyLocks();
+}
+function applyLocks(){
+  LOCK_DEFS.forEach(d=>{
+    const inp=document.getElementById(d.input); if(!inp)return;
+    const field=inp.closest('.field'); const label=field?field.querySelector('label'):null;
+    const locked=lockedKeys.includes(d.key) && !lockUnlocked;
+    inp.readOnly=locked;
+    inp.classList.toggle('locked-input',locked);
+    if(label){
+      const old=label.querySelector('.lock-tag'); if(old)old.remove();
+      if(locked){const s=document.createElement('span');s.className='lock-tag';s.textContent='🔒 travado';label.appendChild(s);}
+    }
+  });
+  const bar=document.getElementById('lockbar'); if(!bar)return;
+  if(!lockedKeys.length){bar.style.display='none';return;}
+  bar.style.display='flex';
+  if(lockUnlocked){
+    bar.classList.add('open');
+    bar.innerHTML='🔓 <span>Edição liberada nesta sessão. Salve para confirmar.</span>';
+  }else{
+    bar.classList.remove('open');
+    const names=LOCK_DEFS.filter(d=>lockedKeys.includes(d.key)).map(d=>d.label).join(', ');
+    bar.innerHTML='🔒 <span>Dados protegidos: '+names+'.</span><span class="spacer"></span><button type="button" onclick="openUnlock()">Destravar</button>';
+  }
+}
+function openUnlock(){
+  const ov=document.getElementById('unlock-overlay');
+  document.getElementById('unlock-pass').value='';
+  document.getElementById('unlock-err').textContent='';
+  ov.classList.add('show');
+  setTimeout(()=>document.getElementById('unlock-pass').focus(),50);
+}
+function closeUnlock(){const ov=document.getElementById('unlock-overlay');if(ov)ov.classList.remove('show');}
+function confirmUnlock(){
+  const v=document.getElementById('unlock-pass').value;
+  if(v!==MASTER_PASS){document.getElementById('unlock-err').textContent='Senha mestre incorreta.';document.getElementById('unlock-pass').focus();return;}
+  lockUnlocked=true; closeUnlock(); applyLocks(); toast('Edição liberada nesta cliente');
+}
 function togglePw(){const i=document.getElementById('f-senha'),b=document.getElementById('pw-btn');
   if(i.type==='password'){i.type='text';b.textContent='ocultar';}else{i.type='password';b.textContent='mostrar';}}
 function syncDriveLink(){const v=normalizeUrl(document.getElementById('f-drive').value);const a=document.getElementById('drive-open');
@@ -542,6 +620,7 @@ function saveLead(){
   let op;
   if(editingId){
     const l=leads.find(x=>x.id===editingId);
+    if(!lockUnlocked){ lockedKeys.forEach(k=>{ data[k]=l[k]; }); }
     const tracked=['nome','codop','benef','cat','tel','seg','cpf','email','endereco','senha','drive','feeBase','feePct','cobrou','banco'];
     const changed=tracked.some(k=>(l[k]||'')!==(data[k]||'')) || JSON.stringify(l.parcelas||[])!==JSON.stringify(data.parcelas);
     let activity=[...(l.activity||[])];
@@ -576,10 +655,16 @@ function toast(m){const t=document.getElementById('toast');t.textContent=m;t.cla
 document.getElementById('overlay').addEventListener('click',e=>{if(e.target.id==='overlay')closeModal();});
 document.getElementById('dash-overlay').addEventListener('click',e=>{if(e.target.id==='dash-overlay')closeDashboard();});
 document.getElementById('del-overlay').addEventListener('click',e=>{if(e.target.id==='del-overlay')closeDel();});
+document.getElementById('unlock-overlay').addEventListener('click',e=>{if(e.target.id==='unlock-overlay')closeUnlock();});
+document.getElementById('unlock-pass').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();confirmUnlock();}});
 document.getElementById('del-pass').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();confirmDelete();}});
 document.getElementById('c-text').addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();addComment();}});
 document.getElementById('f-codop').addEventListener('input',e=>{e.target.value=e.target.value.replace(/\D/g,'').slice(0,6);});
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;
+  const uo=document.getElementById('unlock-overlay'); if(uo&&uo.classList.contains('show')){closeUnlock();return;}
+  const dl=document.getElementById('del-overlay'); if(dl&&dl.classList.contains('show')){closeDel();return;}
+  closeModal();
+});
 
 document.getElementById('filter-benef').insertAdjacentHTML('beforeend',
   BENEFITS.map(b=>'<option value="'+b.v+'">'+b.v+'</option>').join(''));
